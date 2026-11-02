@@ -8,9 +8,16 @@
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
 LiquidCrystal lcd(13, 12, 11, 10, 9, 8);     // RS, E, D4, D5, D6, D7
 
-const int BUTTON_PIN = 4;            // bypass button: reads LOW while pressed
+const int TONIC_KNOB_PIN    = A0;
+const int MAQAM_KNOB_PIN    = A1;
+const int BYPASS_BUTTON_PIN = 4;     // reads LOW while pressed
+const int MAQAM_LED_PIN     = 6;     // green: lit while the maqam is active, like a pedal
+const int SPARE_LED_PIN     = 7;     // red: not used yet, kept off
 
-const long BEND_RANGE_CENTS = 200;   // MicroBrute bend range: +/-2 semitones (verified by ear)
+const int LED_ON  = LOW;             // the shield's LEDs are active low
+const int LED_OFF = HIGH;
+
+const long BEND_RANGE_CENTS = 200;   // Common bend range: +/-2 semitones
 const int  BEND_MIN = -8192;         // MIDI library bends are centered on 0
 const int  BEND_MAX = 8191;
 
@@ -45,6 +52,35 @@ const int maqamCount = sizeof(maqams) / sizeof(maqams[0]);
 int tonic = -1;
 int maqam = -1;
 
+bool bypass = false;                 // toggled by the bypass button
+byte lastNoteChannel = 1;            // channel of the last note we bent, for the bypass reset
+
+// The synth has one bend setting, fed by two sources. We remember both
+// and always send their sum: what you hear = key + maqam offset + wheel.
+int wheelBend = 0;                   // where the keyboard's pitch wheel is (0 = centred)
+int noteBend  = 0;                   // maqam offset of the note currently sounding
+
+// A wheel resting a hair off centre counts as centred.
+// 64 of 8192 is about 1.5 cents, too small to hear as a step.
+const int WHEEL_DEAD_ZONE = 64;
+int  lastBypassButtonReading = HIGH; // HIGH = not pressed (pull-up)
+unsigned long lastBypassButtonChangeTime = 0;  // millis() when the reading last changed
+const unsigned long DEBOUNCE_MS = 30;          // how long the contacts take to settle
+
+// What LCD line 2 shows: the last note we bent. Saved by handleNoteOn,
+// drawn later by updateDisplay().
+bool noteHasBeenPlayed = false;      // line 2 stays blank until the first note
+byte lastNote      = 0;
+int  lastNoteCents = 0;
+int  lastNoteBend  = 0;
+
+// Dirty flag: "the LCD is out of date". Whatever changes what it shows
+// sets the flag; updateDisplay() in loop() redraws at most every
+// DISPLAY_INTERVAL_MS, so MIDI never waits for the slow LCD.
+bool displayDirty = false;
+unsigned long lastDisplayUpdateTime = 0;
+const unsigned long DISPLAY_INTERVAL_MS = 100;  // at most 10 redraws a second
+
 // Turn cents into a pitch bend value (0 = no bend).
 int centsToBend(int cents) {
   long bend = (long)cents * 8192 / BEND_RANGE_CENTS;   // long: 50 * 8192 overflows an int
@@ -53,77 +89,253 @@ int centsToBend(int cents) {
   return (int)bend;
 }
 
-// Show the maqam name and tonic on LCD line 1, e.g. "Husseini       D".
-void showMaqam() {
-  lcd.setCursor(0, 0);
-  lcd.print("                ");            // wipe the old line
-  lcd.setCursor(0, 0);
-  lcd.print(maqams[maqam].name);
-  lcd.setCursor(14, 0);                     // tonic in the last two columns
-  lcd.print(noteNames[tonic]);
+// The only place a bend gets sent: wheel + maqam offset, kept inside the
+// legal range. Past the edges the offset gets cut off (e.g. a half-flat
+// with the wheel fully down). Returns what was sent, for the LCD.
+int sendCombinedBend(byte channel) {
+  int total = wheelBend + noteBend;      // at most about +/-16000, fits in an int
+  if (total < BEND_MIN) total = BEND_MIN;
+  if (total > BEND_MAX) total = BEND_MAX;
+  MIDI.sendPitchBend(total, channel);
+  return total;
 }
 
-// Show the last note, its offset and the bend on LCD line 2, e.g. "E4 -50c  b-2048".
-void showNote(byte note, int cents, int bend) {
+// Print spaces to fill out a field. Writing over old text with padding
+// is cheaper than wiping the whole line first and then writing.
+void printSpaces(int count) {
+  for (int i = 0; i < count; i++) {
+    lcd.print(' ');
+  }
+}
+
+// LCD line 1: maqam name and tonic, e.g. "Husseini       D",
+// or just "BYPASS" when bypassed. Always writes all 16 columns.
+void drawMaqamLine() {
+  lcd.setCursor(0, 0);
+  if (bypass) {
+    int written = lcd.print("BYPASS");      // print() returns how many characters it wrote
+    printSpaces(16 - written);
+    return;
+  }
+  int written = lcd.print(maqams[maqam].name);
+  printSpaces(14 - written);                // name fills columns 0-13
+  written = lcd.print(noteNames[tonic]);
+  printSpaces(2 - written);                 // tonic fills columns 14-15
+}
+
+// LCD line 2: last note, its offset and the bend sent, e.g. "E4 -50c  b-2048".
+// Always writes all 16 columns.
+void drawNoteLine() {
   lcd.setCursor(0, 1);
-  lcd.print("                ");            // wipe the old line
-  lcd.setCursor(0, 1);
-  lcd.print(noteNames[note % 12]);
-  lcd.print(note / 12 - 1);                 // octave (MIDI note 60 = C4)
-  lcd.print(" ");
-  lcd.print(cents);
-  lcd.print("c  b");
-  lcd.print(bend);
+  int written = 0;
+  written += lcd.print(noteNames[lastNote % 12]);
+  written += lcd.print(lastNote / 12 - 1); // octave (MIDI note 60 = C4)
+  written += lcd.print(" ");
+  written += lcd.print(lastNoteCents);
+  written += lcd.print("c  b");
+  written += lcd.print(lastNoteBend);
+  printSpaces(16 - written);
+}
+
+// Called every loop(): redraw the LCD if it's out of date, but not more
+// often than DISPLAY_INTERVAL_MS. Uses millis() like the debounce, so it
+// never waits.
+void updateDisplay() {
+  if (!displayDirty) {
+    return;                                 // nothing changed
+  }
+  if (millis() - lastDisplayUpdateTime < DISPLAY_INTERVAL_MS) {
+    return;                                 // drew recently, try again later
+  }
+
+  drawMaqamLine();
+  if (noteHasBeenPlayed) {
+    drawNoteLine();
+  }
+  displayDirty = false;
+  lastDisplayUpdateTime = millis();
+}
+
+// Light the maqam LED unless bypassed.
+void showMaqamLed() {
+  if (bypass) {
+    digitalWrite(MAQAM_LED_PIN, LED_OFF);
+  } else {
+    digitalWrite(MAQAM_LED_PIN, LED_ON);
+  }
+}
+
+// True bypass: in bypass the library's thru copies every incoming message
+// to the output untouched, and our note handlers stay out of the way.
+void toggleBypass() {
+  bypass = !bypass;
+
+  if (bypass) {
+    // The synth may still be bent from the last maqam note. Thru won't
+    // send a bend before the next note, so drop the offset now and keep
+    // only the wheel. Zeroing noteBend also keeps our memory in step with
+    // the synth for when we leave bypass.
+    noteBend = 0;
+    sendCombinedBend(lastNoteChannel);
+    MIDI.turnThruOn();
+  } else {
+    MIDI.turnThruOff();
+  }
+
+  displayDirty = true;
+  showMaqamLed();                           // an LED is instant, no need to wait
 }
 
 // Read both knobs. Each knob's 0..1023 range is cut into equal slices.
 // map(x, 0, 1024, ...) rather than 1023, so the top slice is as wide as the others.
 void readKnobs() {
-  int newTonic = map(analogRead(A0), 0, 1024, 0, 12);
-  int newMaqam = map(analogRead(A1), 0, 1024, 0, maqamCount);
+  int newTonic = map(analogRead(TONIC_KNOB_PIN), 0, 1024, 0, 12);
+  int newMaqam = map(analogRead(MAQAM_KNOB_PIN), 0, 1024, 0, maqamCount);
 
-  if (newTonic != tonic || newMaqam != maqam) {   // only redraw on change
+  if (newTonic != tonic || newMaqam != maqam) {
     tonic = newTonic;
     maqam = newMaqam;
-    showMaqam();
+    displayDirty = true;
+  }
+}
+
+// Toggle bypass on the "edge" where the button goes from not pressed (HIGH)
+// to pressed (LOW). Holding the button down does nothing more.
+// Debounced: after any change, ignore the pin for DEBOUNCE_MS while the
+// contacts stop bouncing. No delay(), so MIDI keeps flowing meanwhile.
+void readBypassButton() {
+  if (millis() - lastBypassButtonChangeTime < DEBOUNCE_MS) {
+    return;                                                  // still settling
+  }
+
+  int reading = digitalRead(BYPASS_BUTTON_PIN);
+  if (reading == lastBypassButtonReading) {
+    return;                                                  // no change
+  }
+
+  lastBypassButtonChangeTime = millis();
+  lastBypassButtonReading = reading;
+
+  if (reading == LOW) {                                      // just pressed
+    toggleBypass();
   }
 }
 
 void handleNoteOn(byte channel, byte note, byte velocity) {
+  if (bypass) {
+    return;                                 // thru already forwarded it
+  }
+
   // Semitones above the tonic, any octave: % 12 drops the octaves.
   // The + 12 keeps it from going negative for notes below the tonic
   // (in C++, -1 % 12 is -1, not 11). Adding a whole octave never
   // changes the answer, it just keeps the array index valid.
   int step  = (note + 12 - tonic) % 12;
   int cents = maqams[maqam].cents[step];
-  int bend  = centsToBend(cents);
+  noteBend  = centsToBend(cents);
 
-  MIDI.sendPitchBend(bend, channel);        // bend first...
+  int bend = sendCombinedBend(channel);     // bend first (offset + wheel)...
   MIDI.sendNoteOn(note, velocity, channel); // ...then the note
+  lastNoteChannel = channel;
 
-  showNote(note, cents, bend);
+  lastNote      = note;                     // for LCD line 2, drawn later
+  lastNoteCents = cents;
+  lastNoteBend  = bend;
+  noteHasBeenPlayed = true;
+  displayDirty = true;
 }
 
 void handleNoteOff(byte channel, byte note, byte velocity) {
+  if (bypass) {
+    return;                                 // thru already forwarded it
+  }
   MIDI.sendNoteOff(note, velocity, channel);
+}
+
+// The keyboard's pitch wheel moved. bend is -8192..8191, 0 = centred.
+// No LCD here: a moving wheel sends many messages a second, and drawing
+// for each one would slow MIDI down.
+void handlePitchBend(byte channel, int bend) {
+  if (abs(bend) < WHEEL_DEAD_ZONE) {
+    bend = 0;
+  }
+  wheelBend = bend;                         // track it even in bypass...
+
+  if (bypass) {
+    return;                                 // ...but thru already forwarded it
+  }
+  sendCombinedBend(channel);
+}
+
+// Our own thru with a filter: send the message MIDI.read() just received
+// back out unchanged, unless it's one we handle ourselves.
+// Mirrors how the library's built-in thru sends each kind of message.
+void forwardOtherMessage() {
+  midi::MidiType type = MIDI.getType();
+
+  switch (type) {
+    // Handled elsewhere: notes are bent by our handlers,
+    // handlePitchBend combines the wheel with the maqam offset.
+    case midi::NoteOn:
+    case midi::NoteOff:
+    case midi::PitchBend:
+      break;
+
+    // Channel messages: type, up to two data bytes, channel.
+    case midi::ControlChange:               // incl. mod wheel (CC 1)
+    case midi::ProgramChange:
+    case midi::AfterTouchChannel:
+    case midi::AfterTouchPoly:
+      MIDI.send(type, MIDI.getData1(), MIDI.getData2(), MIDI.getChannel());
+      break;
+
+    // Real-time and other one-byte messages: just the type.
+    case midi::Clock:
+    case midi::Start:
+    case midi::Continue:
+    case midi::Stop:
+    case midi::ActiveSensing:
+    case midi::SystemReset:
+    case midi::TuneRequest:
+      MIDI.sendRealTime(type);
+      break;
+
+    // System exclusive: a block of any length. The stored bytes
+    // already include the F0 start and F7 end, hence true.
+    case midi::SystemExclusive:
+      MIDI.sendSysEx(MIDI.getSysExArrayLength(), MIDI.getSysExArray(), true);
+      break;
+
+    // Everything else is dropped, incl. Song Position, Song Select and
+    // timecode
+    default:
+      break;
+  }
 }
 
 void setup() {
   lcd.begin(16, 2);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);        // internal resistor holds the pin HIGH until pressed
+  pinMode(BYPASS_BUTTON_PIN, INPUT_PULLUP); // internal resistor holds the pin HIGH until pressed
+  pinMode(MAQAM_LED_PIN, OUTPUT);
+  pinMode(SPARE_LED_PIN, OUTPUT);
+  digitalWrite(SPARE_LED_PIN, LED_OFF);
+  showMaqamLed();
   readKnobs();                              // know the tonic and maqam before any note arrives
 
   MIDI.setHandleNoteOn(handleNoteOn);
   MIDI.setHandleNoteOff(handleNoteOff);
+  MIDI.setHandlePitchBend(handlePitchBend);
   MIDI.begin(MIDI_CHANNEL_OMNI);            // listen on all channels
   MIDI.turnThruOff();                       // we forward messages ourselves
 }
 
 void loop() {
-  MIDI.read();                              // calls our handlers when a message arrives
+  // read() calls our note handlers, then returns true if a message arrived.
+  // In bypass, the library's thru has already sent it.
+  if (MIDI.read() && !bypass) {
+    forwardOtherMessage();
+  }
   readKnobs();
-
-  // TEMPORARY button test: show the raw pin reading (1 = HIGH, 0 = LOW).
-  lcd.setCursor(11, 0);
-  lcd.print(digitalRead(BUTTON_PIN));
+  readBypassButton();
+  updateDisplay();
 }
