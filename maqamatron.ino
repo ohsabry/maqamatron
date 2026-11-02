@@ -8,6 +8,11 @@
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
 LiquidCrystal lcd(13, 12, 11, 10, 9, 8);     // RS, E, D4, D5, D6, D7
 
+
+// ============================================================
+// Pins
+// ============================================================
+
 const int TONIC_KNOB_PIN    = A0;
 const int MAQAM_KNOB_PIN    = A1;
 const int BYPASS_BUTTON_PIN = 4;     // reads LOW while pressed
@@ -17,14 +22,33 @@ const int SPARE_LED_PIN     = 7;     // red: not used yet, kept off
 const int LED_ON  = LOW;             // the shield's LEDs are active low
 const int LED_OFF = HIGH;
 
+
+// ============================================================
+// Settings
+// ============================================================
+
 const long BEND_RANGE_CENTS = 200;   // Common bend range: +/-2 semitones
 const int  BEND_MIN = -8192;         // MIDI library bends are centered on 0
 const int  BEND_MAX = 8191;
 
+// A wheel resting a hair off centre counts as centred.
+// 64 of 8192 is about 1.5 cents, too small to hear as a step.
+const int WHEEL_DEAD_ZONE = 64;
+
+// How many held keys we remember. Ten fingers; if more arrive, the oldest is dropped.
+const int MAX_HELD_NOTES = 10;
+
+const unsigned long BYPASS_BUTTON_DEBOUNCE_MS = 30;  // how long the contacts take to settle
+const unsigned long DISPLAY_INTERVAL_MS = 100;        // at most 10 LCD redraws a second
+
+
+// ============================================================
+// Maqam tables
+// ============================================================
+
 const char* noteNames[] = {"C", "C#", "D", "D#", "E", "F",
                            "F#", "G", "G#", "A", "A#", "B"};
 
-// ---- Maqam tables ----
 // Cents offset for each key, counted in semitones above the tonic.
 // A half-flat (E-) is the natural key bent down 50 cents. Tweak any number by ear.
 // The order of this list is the order on the maqam knob.
@@ -38,7 +62,7 @@ const Maqam maqams[] = {
   { "Bayati",       {  0,   0, -50,   0,   0,   0,   0,   0,   0,   0,   0,   0 } },  // D E- F G A Bb C
                                                                                          // also covers Saba (Gb) and
                                                                                          // Bayati Shuri (Ab, B): same bends
-  { "Sikah",       {-50,   0,   0,   0,   0,   0,   0, -50,   0,   0,   0,   0 } },  // E- F G A B- C D
+  { "Sikah",        {-50,   0,   0,   0,   0,   0,   0, -50,   0,   0,   0,   0 } },  // E- F G A B- C D
   { "Huzam",        {-50,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0 } },  // E- F G Ab B C D
   { "Rast",         {  0,   0,   0,   0, -50,   0,   0,   0,   0,   0,   0, -50 } },  // C D E- F G A B- (Bb desc)
   { "Husseini",     {  0,   0, -50,   0,   0,   0,   0,   0,   0, -50,   0,   0 } },  // D E- F G A B- C
@@ -47,28 +71,36 @@ const Maqam maqams[] = {
 
 const int maqamCount = sizeof(maqams) / sizeof(maqams[0]);
 
+
+// ============================================================
+// State
+// ============================================================
+
 // Current settings, set by the knobs. -1 means "not read yet",
 // so the first knob reading always counts as a change and draws the LCD.
 int tonic = -1;
 int maqam = -1;
 
 bool bypass = false;                 // toggled by the bypass button
-byte lastNoteChannel = 1;            // channel of the last note we bent, for the bypass reset
 
 // The synth has one bend setting, fed by two sources. We remember both
 // and always send their sum: what you hear = key + maqam offset + wheel.
-int wheelBend = 0;                   // where the keyboard's pitch wheel is (0 = centred)
-int noteBend  = 0;                   // maqam offset of the note currently sounding
+int  wheelBend = 0;                  // where the keyboard's pitch wheel is (0 = centred)
+int  noteBend  = 0;                  // maqam offset of the note currently sounding
+byte lastNoteChannel = 1;            // channel of the last note we bent, for the bypass reset
 
-// A wheel resting a hair off centre counts as centred.
-// 64 of 8192 is about 1.5 cents, too small to hear as a step.
-const int WHEEL_DEAD_ZONE = 64;
+// Keys currently held, oldest first. A mono synth remembers held keys
+// and falls back to one when the sounding key is released; we keep the
+// same list so we know which note to send the bend for.
+byte heldNotes[MAX_HELD_NOTES];
+int  heldNoteCount = 0;
+
+// Bypass button debouncing.
 int  lastBypassButtonReading = HIGH; // HIGH = not pressed (pull-up)
 unsigned long lastBypassButtonChangeTime = 0;  // millis() when the reading last changed
-const unsigned long DEBOUNCE_MS = 30;          // how long the contacts take to settle
 
-// What LCD line 2 shows: the last note we bent. Saved by handleNoteOn,
-// drawn later by updateDisplay().
+// What LCD line 2 shows: the note we last tuned. Saved by
+// tuneSoundingNote(), drawn later by updateDisplay().
 bool noteHasBeenPlayed = false;      // line 2 stays blank until the first note
 byte lastNote      = 0;
 int  lastNoteCents = 0;
@@ -79,7 +111,21 @@ int  lastNoteBend  = 0;
 // DISPLAY_INTERVAL_MS, so MIDI never waits for the slow LCD.
 bool displayDirty = false;
 unsigned long lastDisplayUpdateTime = 0;
-const unsigned long DISPLAY_INTERVAL_MS = 100;  // at most 10 redraws a second
+
+
+// ============================================================
+// Bend math
+// ============================================================
+
+// The current maqam's offset for a key, in cents.
+int maqamCentsForNote(byte note) {
+  // Semitones above the tonic, any octave: % 12 drops the octaves.
+  // The + 12 keeps it from going negative for notes below the tonic
+  // (in C++, -1 % 12 is -1, not 11). Adding a whole octave never
+  // changes the answer, it just keeps the array index valid.
+  int step = (note + 12 - tonic) % 12;
+  return maqams[maqam].cents[step];
+}
 
 // Turn cents into a pitch bend value (0 = no bend).
 int centsToBend(int cents) {
@@ -99,6 +145,11 @@ int sendCombinedBend(byte channel) {
   MIDI.sendPitchBend(total, channel);
   return total;
 }
+
+
+// ============================================================
+// Display (LCD + LED)
+// ============================================================
 
 // Print spaces to fill out a field. Writing over old text with padding
 // is cheaper than wiping the whole line first and then writing.
@@ -165,6 +216,47 @@ void showMaqamLed() {
   }
 }
 
+
+// ============================================================
+// Controls (knobs + bypass button)
+// ============================================================
+
+// Read both knobs. Each knob's 0..1023 range is cut into equal slices.
+// map(x, 0, 1024, ...) rather than 1023, so the top slice is as wide as the others.
+void readKnobs() {
+  int newTonic = map(analogRead(TONIC_KNOB_PIN), 0, 1024, 0, 12);
+  int newMaqam = map(analogRead(MAQAM_KNOB_PIN), 0, 1024, 0, maqamCount);
+
+  if (newTonic != tonic || newMaqam != maqam) {
+    tonic = newTonic;
+    maqam = newMaqam;
+    displayDirty = true;
+  }
+}
+
+// Toggle bypass on the "edge" where the button goes from not pressed (HIGH)
+// to pressed (LOW). Holding the button down does nothing more.
+// Debounced: after any change, ignore the pin for
+// BYPASS_BUTTON_DEBOUNCE_MS while the contacts stop bouncing.
+// No delay(), so MIDI keeps flowing meanwhile.
+void readBypassButton() {
+  if (millis() - lastBypassButtonChangeTime < BYPASS_BUTTON_DEBOUNCE_MS) {
+    return;                                                  // still settling
+  }
+
+  int reading = digitalRead(BYPASS_BUTTON_PIN);
+  if (reading == lastBypassButtonReading) {
+    return;                                                  // no change
+  }
+
+  lastBypassButtonChangeTime = millis();
+  lastBypassButtonReading = reading;
+
+  if (reading == LOW) {                                      // just pressed
+    toggleBypass();
+  }
+}
+
 // True bypass: in bypass the library's thru copies every incoming message
 // to the output untouched, and our note handlers stay out of the way.
 void toggleBypass() {
@@ -186,57 +278,51 @@ void toggleBypass() {
   showMaqamLed();                           // an LED is instant, no need to wait
 }
 
-// Read both knobs. Each knob's 0..1023 range is cut into equal slices.
-// map(x, 0, 1024, ...) rather than 1023, so the top slice is as wide as the others.
-void readKnobs() {
-  int newTonic = map(analogRead(TONIC_KNOB_PIN), 0, 1024, 0, 12);
-  int newMaqam = map(analogRead(MAQAM_KNOB_PIN), 0, 1024, 0, maqamCount);
 
-  if (newTonic != tonic || newMaqam != maqam) {
-    tonic = newTonic;
-    maqam = newMaqam;
-    displayDirty = true;
+// ============================================================
+// Held notes
+// ============================================================
+
+// Take a key off the list, if it's there, and close the gap.
+void removeHeldNote(byte note) {
+  for (int i = 0; i < heldNoteCount; i++) {
+    if (heldNotes[i] == note) {
+      // Shift every later key one slot down, over the removed one.
+      for (int j = i; j < heldNoteCount - 1; j++) {
+        heldNotes[j] = heldNotes[j + 1];
+      }
+      heldNoteCount--;
+      return;
+    }
   }
 }
 
-// Toggle bypass on the "edge" where the button goes from not pressed (HIGH)
-// to pressed (LOW). Holding the button down does nothing more.
-// Debounced: after any change, ignore the pin for DEBOUNCE_MS while the
-// contacts stop bouncing. No delay(), so MIDI keeps flowing meanwhile.
-void readBypassButton() {
-  if (millis() - lastBypassButtonChangeTime < DEBOUNCE_MS) {
-    return;                                                  // still settling
+// Put a key on the end of the list (newest).
+void addHeldNote(byte note) {
+  removeHeldNote(note);                     // never list the same key twice
+  if (heldNoteCount == MAX_HELD_NOTES) {
+    removeHeldNote(heldNotes[0]);           // full: drop the oldest
   }
-
-  int reading = digitalRead(BYPASS_BUTTON_PIN);
-  if (reading == lastBypassButtonReading) {
-    return;                                                  // no change
-  }
-
-  lastBypassButtonChangeTime = millis();
-  lastBypassButtonReading = reading;
-
-  if (reading == LOW) {                                      // just pressed
-    toggleBypass();
-  }
+  heldNotes[heldNoteCount] = note;
+  heldNoteCount++;
 }
 
-void handleNoteOn(byte channel, byte note, byte velocity) {
-  if (bypass) {
-    return;                                 // thru already forwarded it
-  }
+// Which held key the synth is sounding. Must match the synth's
+// note priority setting. Only call when heldNoteCount > 0.
+//   Last: the most recently pressed key wins. Implemented.
+//   Low:  the lowest held key wins. Not implemented.
+//   High: the highest held key wins. Not implemented.
+byte soundingNote() {
+  return heldNotes[heldNoteCount - 1];      // Last: the newest key
+}
 
-  // Semitones above the tonic, any octave: % 12 drops the octaves.
-  // The + 12 keeps it from going negative for notes below the tonic
-  // (in C++, -1 % 12 is -1, not 11). Adding a whole octave never
-  // changes the answer, it just keeps the array index valid.
-  int step  = (note + 12 - tonic) % 12;
-  int cents = maqams[maqam].cents[step];
-  noteBend  = centsToBend(cents);
-
-  int bend = sendCombinedBend(channel);     // bend first (offset + wheel)...
-  MIDI.sendNoteOn(note, velocity, channel); // ...then the note
-  lastNoteChannel = channel;
+// Send the bend for whichever key the synth is sounding, and note it
+// for the LCD. Called whenever the held keys change.
+void tuneSoundingNote(byte channel) {
+  byte note  = soundingNote();
+  int  cents = maqamCentsForNote(note);
+  noteBend   = centsToBend(cents);
+  int  bend  = sendCombinedBend(channel);
 
   lastNote      = note;                     // for LCD line 2, drawn later
   lastNoteCents = cents;
@@ -245,11 +331,39 @@ void handleNoteOn(byte channel, byte note, byte velocity) {
   displayDirty = true;
 }
 
-void handleNoteOff(byte channel, byte note, byte velocity) {
+
+// ============================================================
+// MIDI handlers
+// ============================================================
+
+// The held-keys list is kept up to date even in bypass, so it's
+// right when we leave bypass.
+
+void handleNoteOn(byte channel, byte note, byte velocity) {
+  addHeldNote(note);
   if (bypass) {
     return;                                 // thru already forwarded it
   }
+
+  tuneSoundingNote(channel);                // bend first (offset + wheel)...
+  MIDI.sendNoteOn(note, velocity, channel); // ...then the note
+  lastNoteChannel = channel;
+}
+
+void handleNoteOff(byte channel, byte note, byte velocity) {
+  removeHeldNote(note);
+  if (bypass) {
+    return;                                 // thru already forwarded it
+  }
+
   MIDI.sendNoteOff(note, velocity, channel);
+
+  // If keys are still held, the synth falls back to one of them:
+  // send its bend. (If an older key was released, the sounding key
+  // hasn't changed and this just re-sends the same bend.)
+  if (heldNoteCount > 0) {
+    tuneSoundingNote(channel);
+  }
 }
 
 // The keyboard's pitch wheel moved. bend is -8192..8191, 0 = centred.
@@ -307,11 +421,16 @@ void forwardOtherMessage() {
       break;
 
     // Everything else is dropped, incl. Song Position, Song Select and
-    // timecode
+    // timecode.
     default:
       break;
   }
 }
+
+
+// ============================================================
+// setup / loop
+// ============================================================
 
 void setup() {
   lcd.begin(16, 2);
