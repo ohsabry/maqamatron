@@ -8,17 +8,9 @@
 #include "maqams.h"
 #include "bend.h"
 #include "display.h"
+#include "controls.h"
 
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
-
-
-// ============================================================
-// Pins
-// ============================================================
-
-const int TONIC_KNOB_PIN    = A0;
-const int MAQAM_KNOB_PIN    = A1;
-const int BYPASS_BUTTON_PIN = 4;     // reads LOW while pressed
 
 
 // ============================================================
@@ -27,8 +19,6 @@ const int BYPASS_BUTTON_PIN = 4;     // reads LOW while pressed
 
 // How many held keys we remember. Ten fingers; if more arrive, the oldest is dropped.
 const int MAX_HELD_NOTES = 10;
-
-const unsigned long BYPASS_BUTTON_DEBOUNCE_MS = 30;  // how long the contacts take to settle
 
 
 // ============================================================
@@ -54,9 +44,6 @@ byte lastNoteChannel = 1;            // channel of the last note played, for ben
 byte heldNotes[MAX_HELD_NOTES];
 int  heldNoteCount = 0;
 
-// Bypass button debouncing.
-int  lastBypassButtonReading = HIGH; // HIGH = not pressed (pull-up)
-unsigned long lastBypassButtonChangeTime = 0;  // millis() when the reading last changed
 
 
 // ============================================================
@@ -73,42 +60,20 @@ int sendCombinedBend(byte channel) {
 
 
 // ============================================================
-// Controls (knobs + bypass button)
+// Controls: what knob and button changes mean
 // ============================================================
 
-// Read both knobs. Each knob's 0..1023 range is cut into equal slices.
-// map(x, 0, 1024, ...) rather than 1023, so the top slice is as wide as the others.
-void readKnobs() {
-  int newTonic = map(analogRead(TONIC_KNOB_PIN), 0, 1024, 0, 12);
-  int newMaqam = map(analogRead(MAQAM_KNOB_PIN), 0, 1024, 0, maqamCount);
+// Read the knobs and button (in controls.cpp), and decide what changes mean.
+void readControls() {
+  controlsUpdate();
 
-  if (newTonic != tonic || newMaqam != maqam) {
-    tonic = newTonic;
-    maqam = newMaqam;
+  if (controlsKnobsChanged()) {
+    tonic = controlsTonic();
+    maqam = controlsMaqam();
     displaySetMaqam(maqams[maqam].name, tonic, bypass);
     retuneHeldNote();                       // a held key takes the new tuning now
   }
-}
-
-// Toggle bypass on the "edge" where the button goes from not pressed (HIGH)
-// to pressed (LOW). Holding the button down does nothing more.
-// Debounced: after any change, ignore the pin for
-// BYPASS_BUTTON_DEBOUNCE_MS while the contacts stop bouncing.
-// No delay(), so MIDI keeps flowing meanwhile.
-void readBypassButton() {
-  if (millis() - lastBypassButtonChangeTime < BYPASS_BUTTON_DEBOUNCE_MS) {
-    return;                                                  // still settling
-  }
-
-  int reading = digitalRead(BYPASS_BUTTON_PIN);
-  if (reading == lastBypassButtonReading) {
-    return;                                                  // no change
-  }
-
-  lastBypassButtonChangeTime = millis();
-  lastBypassButtonReading = reading;
-
-  if (reading == LOW) {                                      // just pressed
+  if (controlsBypassPressed()) {
     toggleBypass();
   }
 }
@@ -292,14 +257,17 @@ void forwardOtherMessage() {
 
 void setup() {
   displayBegin();
-  pinMode(BYPASS_BUTTON_PIN, INPUT_PULLUP); // internal resistor holds the pin HIGH until pressed
-  readKnobs();                              // know the tonic and maqam before any note arrives
+  controlsBegin(maqamCount);
 
   MIDI.setHandleNoteOn(handleNoteOn);
   MIDI.setHandleNoteOff(handleNoteOff);
   MIDI.setHandlePitchBend(handlePitchBend);
   MIDI.begin(MIDI_CHANNEL_OMNI);            // listen on all channels
   MIDI.turnThruOff();                       // we forward messages ourselves
+
+  // Know the tonic and maqam before any note arrives. After MIDI.begin(),
+  // because a button held at power-on toggles bypass, which sends MIDI.
+  readControls();
 }
 
 void loop() {
@@ -308,7 +276,6 @@ void loop() {
   if (MIDI.read() && !bypass) {
     forwardOtherMessage();
   }
-  readKnobs();
-  readBypassButton();
+  readControls();
   displayUpdate();
 }
