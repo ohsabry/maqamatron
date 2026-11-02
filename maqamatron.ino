@@ -5,7 +5,9 @@
 #include <MIDI.h>
 #include <LiquidCrystal.h>
 
+#include "settings.h"
 #include "maqams.h"
+#include "bend.h"
 
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
 LiquidCrystal lcd(13, 12, 11, 10, 9, 8);     // RS, E, D4, D5, D6, D7
@@ -28,14 +30,6 @@ const int LED_OFF = HIGH;
 // ============================================================
 // Settings
 // ============================================================
-
-const long BEND_RANGE_CENTS = 200;   // Common bend range: +/-2 semitones
-const int  BEND_MIN = -8192;         // MIDI library bends are centered on 0
-const int  BEND_MAX = 8191;
-
-// A wheel resting a hair off centre counts as centred.
-// 64 of 8192 is about 1.5 cents, too small to hear as a step.
-const int WHEEL_DEAD_ZONE = 64;
 
 // How many held keys we remember. Ten fingers; if more arrive, the oldest is dropped.
 const int MAX_HELD_NOTES = 10;
@@ -86,24 +80,13 @@ unsigned long lastDisplayUpdateTime = 0;
 
 
 // ============================================================
-// Bend math
+// Sending bends
 // ============================================================
 
-// Turn cents into a pitch bend value (0 = no bend).
-int centsToBend(int cents) {
-  long bend = (long)cents * 8192 / BEND_RANGE_CENTS;   // long: 50 * 8192 overflows an int
-  if (bend < BEND_MIN) bend = BEND_MIN;
-  if (bend > BEND_MAX) bend = BEND_MAX;
-  return (int)bend;
-}
-
-// The only place a bend gets sent: wheel + maqam offset, kept inside the
-// legal range. Past the edges the offset gets cut off (e.g. a half-flat
-// with the wheel fully down). Returns what was sent, for the LCD.
+// The only place a bend gets sent: wheel + maqam offset (the math is in
+// bend.cpp). Returns what was sent, for the LCD.
 int sendCombinedBend(byte channel) {
-  int total = wheelBend + noteBend;      // at most about +/-16000, fits in an int
-  if (total < BEND_MIN) total = BEND_MIN;
-  if (total > BEND_MAX) total = BEND_MAX;
+  int total = combineBend(wheelBend, noteBend);
   MIDI.sendPitchBend(total, channel);
   return total;
 }
@@ -285,7 +268,7 @@ byte soundingNote() {
 void tuneSoundingNote(byte channel) {
   byte note  = soundingNote();
   int  cents = maqamCentsForNote(note, tonic, maqam);
-  noteBend   = centsToBend(cents);
+  noteBend   = centsToBend(cents, BEND_RANGE_CENTS);
   int  bend  = sendCombinedBend(channel);
 
   lastNote      = note;                     // for LCD line 2, drawn later
@@ -343,10 +326,7 @@ void handleNoteOff(byte channel, byte note, byte velocity) {
 // No LCD here: a moving wheel sends many messages a second, and drawing
 // for each one would slow MIDI down.
 void handlePitchBend(byte channel, int bend) {
-  if (abs(bend) < WHEEL_DEAD_ZONE) {
-    bend = 0;
-  }
-  wheelBend = bend;                         // track it even in bypass...
+  wheelBend = applyWheelDeadZone(bend, WHEEL_DEAD_ZONE);   // track it even in bypass...
 
   if (bypass) {
     return;                                 // ...but thru already forwarded it

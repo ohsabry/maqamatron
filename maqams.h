@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include <stdint.h>
+#include <stdint.h>   // uint8_t
 
 // Note names, indexed by pitch class (C = 0, C# = 1 ... B = 11).
 extern const char* noteNames[12];
