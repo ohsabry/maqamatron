@@ -5,6 +5,8 @@
 #include <MIDI.h>
 #include <LiquidCrystal.h>
 
+#include "maqams.h"
+
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
 LiquidCrystal lcd(13, 12, 11, 10, 9, 8);     // RS, E, D4, D5, D6, D7
 
@@ -40,36 +42,6 @@ const int MAX_HELD_NOTES = 10;
 
 const unsigned long BYPASS_BUTTON_DEBOUNCE_MS = 30;  // how long the contacts take to settle
 const unsigned long DISPLAY_INTERVAL_MS = 100;        // at most 10 LCD redraws a second
-
-
-// ============================================================
-// Maqam tables
-// ============================================================
-
-const char* noteNames[] = {"C", "C#", "D", "D#", "E", "F",
-                           "F#", "G", "G#", "A", "A#", "B"};
-
-// Cents offset for each key, counted in semitones above the tonic.
-// A half-flat (E-) is the natural key bent down 50 cents. Tweak any number by ear.
-// The order of this list is the order on the maqam knob.
-struct Maqam {
-  const char* name;
-  int cents[12];
-};
-
-const Maqam maqams[] = {
-  //                  0    1    2    3    4    5    6    7    8    9   10   11
-  { "Bayati",       {  0,   0, -50,   0,   0,   0,   0,   0,   0,   0,   0,   0 } },  // D E- F G A Bb C
-                                                                                         // also covers Saba (Gb) and
-                                                                                         // Bayati Shuri (Ab, B): same bends
-  { "Sikah",        {-50,   0,   0,   0,   0,   0,   0, -50,   0,   0,   0,   0 } },  // E- F G A B- C D
-  { "Huzam",        {-50,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0 } },  // E- F G Ab B C D
-  { "Rast",         {  0,   0,   0,   0, -50,   0,   0,   0,   0,   0,   0, -50 } },  // C D E- F G A B- (Bb desc)
-  { "Husseini",     {  0,   0, -50,   0,   0,   0,   0,   0,   0, -50,   0,   0 } },  // D E- F G A B- C
-  { "Suznak",       {  0,   0,   0,   0, -50,   0,   0,   0,   0,   0,   0,   0 } },  // C D E- F G Ab B
-};
-
-const int maqamCount = sizeof(maqams) / sizeof(maqams[0]);
 
 
 // ============================================================
@@ -116,16 +88,6 @@ unsigned long lastDisplayUpdateTime = 0;
 // ============================================================
 // Bend math
 // ============================================================
-
-// The current maqam's offset for a key, in cents.
-int maqamCentsForNote(byte note) {
-  // Semitones above the tonic, any octave: % 12 drops the octaves.
-  // The + 12 keeps it from going negative for notes below the tonic
-  // (in C++, -1 % 12 is -1, not 11). Adding a whole octave never
-  // changes the answer, it just keeps the array index valid.
-  int step = (note + 12 - tonic) % 12;
-  return maqams[maqam].cents[step];
-}
 
 // Turn cents into a pitch bend value (0 = no bend).
 int centsToBend(int cents) {
@@ -322,7 +284,7 @@ byte soundingNote() {
 // for the LCD. Called whenever the held keys change.
 void tuneSoundingNote(byte channel) {
   byte note  = soundingNote();
-  int  cents = maqamCentsForNote(note);
+  int  cents = maqamCentsForNote(note, tonic, maqam);
   noteBend   = centsToBend(cents);
   int  bend  = sendCombinedBend(channel);
 
