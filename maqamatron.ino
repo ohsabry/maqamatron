@@ -3,14 +3,13 @@
 // Shield switch: PROG to upload, RUN to play.
 
 #include <MIDI.h>
-#include <LiquidCrystal.h>
 
 #include "settings.h"
 #include "maqams.h"
 #include "bend.h"
+#include "display.h"
 
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
-LiquidCrystal lcd(13, 12, 11, 10, 9, 8);     // RS, E, D4, D5, D6, D7
 
 
 // ============================================================
@@ -20,11 +19,6 @@ LiquidCrystal lcd(13, 12, 11, 10, 9, 8);     // RS, E, D4, D5, D6, D7
 const int TONIC_KNOB_PIN    = A0;
 const int MAQAM_KNOB_PIN    = A1;
 const int BYPASS_BUTTON_PIN = 4;     // reads LOW while pressed
-const int MAQAM_LED_PIN     = 6;     // green: lit while the maqam is active, like a pedal
-const int SPARE_LED_PIN     = 7;     // red: not used yet, kept off
-
-const int LED_ON  = LOW;             // the shield's LEDs are active low
-const int LED_OFF = HIGH;
 
 
 // ============================================================
@@ -35,7 +29,6 @@ const int LED_OFF = HIGH;
 const int MAX_HELD_NOTES = 10;
 
 const unsigned long BYPASS_BUTTON_DEBOUNCE_MS = 30;  // how long the contacts take to settle
-const unsigned long DISPLAY_INTERVAL_MS = 100;        // at most 10 LCD redraws a second
 
 
 // ============================================================
@@ -65,19 +58,6 @@ int  heldNoteCount = 0;
 int  lastBypassButtonReading = HIGH; // HIGH = not pressed (pull-up)
 unsigned long lastBypassButtonChangeTime = 0;  // millis() when the reading last changed
 
-// What LCD line 2 shows: the note we last tuned. Saved by
-// tuneSoundingNote(), drawn later by updateDisplay().
-bool noteHasBeenPlayed = false;      // line 2 stays blank until the first note
-byte lastNote      = 0;
-int  lastNoteCents = 0;
-int  lastNoteBend  = 0;
-
-// Dirty flag: "the LCD is out of date". Whatever changes what it shows
-// sets the flag; updateDisplay() in loop() redraws at most every
-// DISPLAY_INTERVAL_MS, so MIDI never waits for the slow LCD.
-bool displayDirty = false;
-unsigned long lastDisplayUpdateTime = 0;
-
 
 // ============================================================
 // Sending bends
@@ -89,76 +69,6 @@ int sendCombinedBend(byte channel) {
   int total = combineBend(wheelBend, noteBend);
   MIDI.sendPitchBend(total, channel);
   return total;
-}
-
-
-// ============================================================
-// Display (LCD + LED)
-// ============================================================
-
-// Print spaces to fill out a field. Writing over old text with padding
-// is cheaper than wiping the whole line first and then writing.
-void printSpaces(int count) {
-  for (int i = 0; i < count; i++) {
-    lcd.print(' ');
-  }
-}
-
-// LCD line 1: maqam name and tonic, e.g. "Husseini       D",
-// or just "BYPASS" when bypassed. Always writes all 16 columns.
-void drawMaqamLine() {
-  lcd.setCursor(0, 0);
-  if (bypass) {
-    int written = lcd.print("BYPASS");      // print() returns how many characters it wrote
-    printSpaces(16 - written);
-    return;
-  }
-  int written = lcd.print(maqams[maqam].name);
-  printSpaces(14 - written);                // name fills columns 0-13
-  written = lcd.print(noteNames[tonic]);
-  printSpaces(2 - written);                 // tonic fills columns 14-15
-}
-
-// LCD line 2: last note, its offset and the bend sent, e.g. "E4 -50c  b-2048".
-// Always writes all 16 columns.
-void drawNoteLine() {
-  lcd.setCursor(0, 1);
-  int written = 0;
-  written += lcd.print(noteNames[lastNote % 12]);
-  written += lcd.print(lastNote / 12 - 1); // octave (MIDI note 60 = C4)
-  written += lcd.print(" ");
-  written += lcd.print(lastNoteCents);
-  written += lcd.print("c  b");
-  written += lcd.print(lastNoteBend);
-  printSpaces(16 - written);
-}
-
-// Called every loop(): redraw the LCD if it's out of date, but not more
-// often than DISPLAY_INTERVAL_MS. Uses millis() like the debounce, so it
-// never waits.
-void updateDisplay() {
-  if (!displayDirty) {
-    return;                                 // nothing changed
-  }
-  if (millis() - lastDisplayUpdateTime < DISPLAY_INTERVAL_MS) {
-    return;                                 // drew recently, try again later
-  }
-
-  drawMaqamLine();
-  if (noteHasBeenPlayed) {
-    drawNoteLine();
-  }
-  displayDirty = false;
-  lastDisplayUpdateTime = millis();
-}
-
-// Light the maqam LED unless bypassed.
-void showMaqamLed() {
-  if (bypass) {
-    digitalWrite(MAQAM_LED_PIN, LED_OFF);
-  } else {
-    digitalWrite(MAQAM_LED_PIN, LED_ON);
-  }
 }
 
 
@@ -175,7 +85,7 @@ void readKnobs() {
   if (newTonic != tonic || newMaqam != maqam) {
     tonic = newTonic;
     maqam = newMaqam;
-    displayDirty = true;
+    displaySetMaqam(maqams[maqam].name, tonic, bypass);
     retuneHeldNote();                       // a held key takes the new tuning now
   }
 }
@@ -221,8 +131,7 @@ void toggleBypass() {
     retuneHeldNote();                       // a held key gets its maqam offset back
   }
 
-  displayDirty = true;
-  showMaqamLed();                           // an LED is instant, no need to wait
+  displaySetMaqam(maqams[maqam].name, tonic, bypass);
 }
 
 
@@ -271,11 +180,7 @@ void tuneSoundingNote(byte channel) {
   noteBend   = centsToBend(cents, BEND_RANGE_CENTS);
   int  bend  = sendCombinedBend(channel);
 
-  lastNote      = note;                     // for LCD line 2, drawn later
-  lastNoteCents = cents;
-  lastNoteBend  = bend;
-  noteHasBeenPlayed = true;
-  displayDirty = true;
+  displaySetNote(note, cents, bend);
 }
 
 // A knob or bypass changed, and a key may still be held: retune it now
@@ -386,12 +291,8 @@ void forwardOtherMessage() {
 // ============================================================
 
 void setup() {
-  lcd.begin(16, 2);
+  displayBegin();
   pinMode(BYPASS_BUTTON_PIN, INPUT_PULLUP); // internal resistor holds the pin HIGH until pressed
-  pinMode(MAQAM_LED_PIN, OUTPUT);
-  pinMode(SPARE_LED_PIN, OUTPUT);
-  digitalWrite(SPARE_LED_PIN, LED_OFF);
-  showMaqamLed();
   readKnobs();                              // know the tonic and maqam before any note arrives
 
   MIDI.setHandleNoteOn(handleNoteOn);
@@ -409,5 +310,5 @@ void loop() {
   }
   readKnobs();
   readBypassButton();
-  updateDisplay();
+  displayUpdate();
 }
