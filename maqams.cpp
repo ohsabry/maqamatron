@@ -16,13 +16,13 @@ const Maqam maqams[] = {
   { "Suznak",       {  0,   0,   0,   0, -50,   0,   0,   0,   0,   0,   0,   0 } },  // C D E- F G Ab B
 };
 
-const int maqamCount = sizeof(maqams) / sizeof(maqams[0]);
+const int16_t maqamCount = sizeof(maqams) / sizeof(maqams[0]);
 
-int maqamCentsForNote(uint8_t note, int tonic, int maqamIndex) {
+int16_t maqamCentsForNote(uint8_t note, int16_t tonic, int16_t maqamIndex) {
   // Semitones above the tonic, any octave: % 12 drops the octaves.
   // The + 12 keeps it from going negative for notes below the tonic
   // (in C++, -1 % 12 is -1, not 11). Adding a whole octave never
   // changes the answer, it just keeps the array index valid.
-  int step = (note + 12 - tonic) % 12;
+  int16_t step = (note + 12 - tonic) % 12;
   return maqams[maqamIndex].cents[step];
 }
