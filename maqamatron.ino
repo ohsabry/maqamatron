@@ -9,16 +9,9 @@
 #include "bend.h"
 #include "display.h"
 #include "controls.h"
+#include "heldNotes.h"
 
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
-
-
-// ============================================================
-// Settings
-// ============================================================
-
-// How many held keys we remember. Ten fingers; if more arrive, the oldest is dropped.
-const int MAX_HELD_NOTES = 10;
 
 
 // ============================================================
@@ -38,11 +31,8 @@ int  wheelBend = 0;                  // where the keyboard's pitch wheel is (0 =
 int  noteBend  = 0;                  // maqam offset of the note currently sounding
 byte lastNoteChannel = 1;            // channel of the last note played, for bends no MIDI message triggered
 
-// Keys currently held, oldest first. A mono synth remembers held keys
-// and falls back to one when the sounding key is released; we keep the
-// same list so we know which note to send the bend for.
-byte heldNotes[MAX_HELD_NOTES];
-int  heldNoteCount = 0;
+// Keys currently held, in the order pressed (see heldNotes.h).
+HeldNotes heldNotes;
 
 
 
@@ -101,46 +91,13 @@ void toggleBypass() {
 
 
 // ============================================================
-// Held notes
+// Tuning the held notes
 // ============================================================
-
-// Take a key off the list, if it's there, and close the gap.
-void removeHeldNote(byte note) {
-  for (int i = 0; i < heldNoteCount; i++) {
-    if (heldNotes[i] == note) {
-      // Shift every later key one slot down, over the removed one.
-      for (int j = i; j < heldNoteCount - 1; j++) {
-        heldNotes[j] = heldNotes[j + 1];
-      }
-      heldNoteCount--;
-      return;
-    }
-  }
-}
-
-// Put a key on the end of the list (newest).
-void addHeldNote(byte note) {
-  removeHeldNote(note);                     // never list the same key twice
-  if (heldNoteCount == MAX_HELD_NOTES) {
-    removeHeldNote(heldNotes[0]);           // full: drop the oldest
-  }
-  heldNotes[heldNoteCount] = note;
-  heldNoteCount++;
-}
-
-// Which held key the synth is sounding. Must match the synth's
-// note priority setting. Only call when heldNoteCount > 0.
-//   Last: the most recently pressed key wins. Implemented.
-//   Low:  the lowest held key wins. Not implemented.
-//   High: the highest held key wins. Not implemented.
-byte soundingNote() {
-  return heldNotes[heldNoteCount - 1];      // Last: the newest key
-}
 
 // Send the bend for whichever key the synth is sounding, and note it
 // for the LCD. Called whenever the held keys change.
 void tuneSoundingNote(byte channel) {
-  byte note  = soundingNote();
+  byte note  = heldNotes.sounding(NOTE_PRIORITY);
   int  cents = maqamCentsForNote(note, tonic, maqam);
   noteBend   = centsToBend(cents, BEND_RANGE_CENTS);
   int  bend  = sendCombinedBend(channel);
@@ -152,7 +109,7 @@ void tuneSoundingNote(byte channel) {
 // instead of waiting for the next note. No MIDI message came in, so
 // there's no channel to reply on; use the last note's.
 void retuneHeldNote() {
-  if (heldNoteCount > 0 && !bypass) {
+  if (heldNotes.any() && !bypass) {
     tuneSoundingNote(lastNoteChannel);
   }
 }
@@ -166,7 +123,7 @@ void retuneHeldNote() {
 // right when we leave bypass.
 
 void handleNoteOn(byte channel, byte note, byte velocity) {
-  addHeldNote(note);
+  heldNotes.add(note);
   lastNoteChannel = channel;
   if (bypass) {
     return;                                 // thru already forwarded it
@@ -177,7 +134,7 @@ void handleNoteOn(byte channel, byte note, byte velocity) {
 }
 
 void handleNoteOff(byte channel, byte note, byte velocity) {
-  removeHeldNote(note);
+  heldNotes.remove(note);
   if (bypass) {
     return;                                 // thru already forwarded it
   }
@@ -187,7 +144,7 @@ void handleNoteOff(byte channel, byte note, byte velocity) {
   // If keys are still held, the synth falls back to one of them:
   // send its bend. (If an older key was released, the sounding key
   // hasn't changed and this just re-sends the same bend.)
-  if (heldNoteCount > 0) {
+  if (heldNotes.any()) {
     tuneSoundingNote(channel);
   }
 }
