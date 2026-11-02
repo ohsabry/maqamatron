@@ -3,15 +3,16 @@
 const char* noteNames[12] = {"C", "C#", "D", "D#", "E", "F",
                              "F#", "G", "G#", "A", "A#", "B"};
 
-// Tweak any number by ear to taste.
+// Half-flats start at -50 cents. Real intonation varies by maqam and by
+// player (roughly -40 to -60), so tune these by ear.
+// Scale comments show each maqam on its usual tonic; "-" marks a half-flat.
+// Bayati also covers Saba and Bayati Shuri, which bend the same keys.
 const Maqam maqams[] = {
   //                  0    1    2    3    4    5    6    7    8    9   10   11
   { "Bayati",       {  0,   0, -50,   0,   0,   0,   0,   0,   0,   0,   0,   0 } },  // D E- F G A Bb C
-                                                                                         // also covers Saba (Gb) and
-                                                                                         // Bayati Shuri (Ab, B): same bends
   { "Sikah",        {-50,   0,   0,   0,   0,   0,   0, -50,   0,   0,   0,   0 } },  // E- F G A B- C D
   { "Huzam",        {-50,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0 } },  // E- F G Ab B C D
-  { "Rast",         {  0,   0,   0,   0, -50,   0,   0,   0,   0,   0,   0, -50 } },  // C D E- F G A B- (Bb desc)
+  { "Rast",         {  0,   0,   0,   0, -50,   0,   0,   0,   0,   0,   0, -50 } },  // C D E- F G A B- (Bb descending)
   { "Husseini",     {  0,   0, -50,   0,   0,   0,   0,   0,   0, -50,   0,   0 } },  // D E- F G A B- C
   { "Suznak",       {  0,   0,   0,   0, -50,   0,   0,   0,   0,   0,   0,   0 } },  // C D E- F G Ab B
 };

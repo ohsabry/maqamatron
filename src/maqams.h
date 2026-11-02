@@ -5,14 +5,15 @@
 
 #include <stdint.h>
 
-// Fixed-size types mirror the Arduino Uno, so the code means the same on
-// any chip (and in tests on a computer): int16_t is the Uno's int,
-// int32_t is the Uno's long, uint8_t is a byte.
+// Fixed-width types match the Uno (int16_t = int, int32_t = long), so the
+// code behaves the same on any chip and in tests on a computer.
 
 // Note names, indexed by pitch class (C = 0, C# = 1 ... B = 11).
 extern const char* noteNames[12];
 
-// Cents offset for each key, counted in semitones above the tonic.
+// A maqam's tuning: a cents offset for each of the 12 keys, counted in
+// semitones above the tonic. A half-flat is the natural key bent down
+// about 50 cents.
 struct Maqam {
   const char* name;
   int16_t cents[12];

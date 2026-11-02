@@ -7,9 +7,8 @@
 
 #include <stdint.h>
 
-// Fixed-size types mirror the Arduino Uno, so the code means the same on
-// any chip (and in tests on a computer): int16_t is the Uno's int,
-// int32_t is the Uno's long, uint8_t is a byte.
+// Fixed-width types match the Uno (int16_t = int, int32_t = long), so the
+// code behaves the same on any chip and in tests on a computer.
 
 // How many held keys we remember. Ten fingers; if more arrive, the oldest is dropped.
 const int16_t MAX_HELD_NOTES = 10;

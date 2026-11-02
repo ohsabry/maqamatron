@@ -5,8 +5,7 @@
 
 #include "maqams.h"           // noteNames
 
-// Everything below is "static": private to this file. The rest of the
-// code can only reach the display through the functions in display.h.
+// All state below is file-private; display.h is the public interface.
 
 static LiquidCrystal lcd(13, 12, 11, 10, 9, 8);     // RS, E, D4, D5, D6, D7
 
@@ -27,8 +26,8 @@ static uint8_t shownNote  = 0;
 static int16_t shownCents = 0;
 static int16_t shownBend  = 0;
 
-// Dirty flag: "the LCD is out of date". Set by displaySet...(),
-// cleared by displayUpdate() once it has redrawn.
+// Set by displaySet...() when the LCD is out of date; cleared by
+// displayUpdate() once it has redrawn.
 static bool displayDirty = false;
 static unsigned long lastDisplayUpdateTime = 0;
 

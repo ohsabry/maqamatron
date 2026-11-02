@@ -1,15 +1,22 @@
-// Maqamatron
-// Knob A0 picks the tonic, knob A1 picks the maqam.
-// Shield switch: PROG to upload, RUN to play.
+// Maqamatron: Arabic maqam quarter tones for a mono synth.
+//
+// Sits between a MIDI keyboard and a synth. Each note gets a pitch bend
+// that puts it where the selected maqam wants it (e.g. E half-flat in
+// Bayati), with the keyboard's own pitch wheel added on top. Everything
+// else passes through untouched.
+//
+// Hardware: Arduino Uno (or SparkFun RedBoard) with the SparkFun MIDI
+// Shield and a 16x2 LCD. Set the shield's switch to PROG to upload and
+// RUN to play.
 
 #include <MIDI.h>
 
-#include "settings.h"
-#include "maqams.h"
-#include "bend.h"
-#include "display.h"
-#include "controls.h"
-#include "heldNotes.h"
+#include "src/settings.h"
+#include "src/maqams.h"
+#include "src/bend.h"
+#include "src/display.h"
+#include "src/controls.h"
+#include "src/heldNotes.h"
 
 MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
 
@@ -18,8 +25,7 @@ MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
 // State
 // ============================================================
 
-// Current settings, set by the knobs. -1 means "not read yet",
-// so the first knob reading always counts as a change and draws the LCD.
+// Set from the knobs by readControls(); -1 until the first reading.
 int tonic = -1;
 int maqam = -1;
 
@@ -35,13 +41,12 @@ byte lastNoteChannel = 1;            // channel of the last note played, for ben
 HeldNotes heldNotes;
 
 
-
 // ============================================================
 // Sending bends
 // ============================================================
 
-// The only place a bend gets sent: wheel + maqam offset (the math is in
-// bend.cpp). Returns what was sent, for the LCD.
+// The only place a bend is sent: wheel + maqam offset (the math is in
+// bend.cpp). Returns the value sent, for the display.
 int sendCombinedBend(byte channel) {
   int total = combineBend(wheelBend, noteBend);
   MIDI.sendPitchBend(total, channel);
@@ -53,7 +58,7 @@ int sendCombinedBend(byte channel) {
 // Controls: what knob and button changes mean
 // ============================================================
 
-// Read the knobs and button (in controls.cpp), and decide what changes mean.
+// Read the knobs and button, and act on any changes.
 void readControls() {
   controlsUpdate();
 
@@ -94,8 +99,8 @@ void toggleBypass() {
 // Tuning the held notes
 // ============================================================
 
-// Send the bend for whichever key the synth is sounding, and note it
-// for the LCD. Called whenever the held keys change.
+// Send the bend for whichever key the synth is sounding, and report it
+// to the display. Called whenever the held keys change.
 void tuneSoundingNote(byte channel) {
   byte note  = heldNotes.sounding(NOTE_PRIORITY);
   int  cents = maqamCentsForNote(note, tonic, maqam);
@@ -105,9 +110,9 @@ void tuneSoundingNote(byte channel) {
   displaySetNote(note, cents, bend);
 }
 
-// A knob or bypass changed, and a key may still be held: retune it now
-// instead of waiting for the next note. No MIDI message came in, so
-// there's no channel to reply on; use the last note's.
+// A knob or bypass changed while a key may be held: retune it now rather
+// than on the next note. This isn't triggered by a MIDI message, so there's
+// no incoming channel; use the last note's.
 void retuneHeldNote() {
   if (heldNotes.any() && !bypass) {
     tuneSoundingNote(lastNoteChannel);
@@ -119,8 +124,8 @@ void retuneHeldNote() {
 // MIDI handlers
 // ============================================================
 
-// The held-keys list is kept up to date even in bypass, so it's
-// right when we leave bypass.
+// The handlers keep heldNotes, wheelBend and lastNoteChannel up to date
+// even in bypass, so they're correct when bypass is switched off.
 
 void handleNoteOn(byte channel, byte note, byte velocity) {
   heldNotes.add(note);
@@ -153,17 +158,16 @@ void handleNoteOff(byte channel, byte note, byte velocity) {
 // No LCD here: a moving wheel sends many messages a second, and drawing
 // for each one would slow MIDI down.
 void handlePitchBend(byte channel, int bend) {
-  wheelBend = applyWheelDeadZone(bend, WHEEL_DEAD_ZONE);   // track it even in bypass...
+  wheelBend = applyWheelDeadZone(bend, WHEEL_DEAD_ZONE);
 
   if (bypass) {
-    return;                                 // ...but thru already forwarded it
+    return;                                 // thru already forwarded it
   }
   sendCombinedBend(channel);
 }
 
-// Our own thru with a filter: send the message MIDI.read() just received
-// back out unchanged, unless it's one we handle ourselves.
-// Mirrors how the library's built-in thru sends each kind of message.
+// A filtered thru: send the message MIDI.read() just received back out
+// unchanged, unless we handle it ourselves or it's on the dropped list below.
 void forwardOtherMessage() {
   midi::MidiType type = MIDI.getType();
 
@@ -200,8 +204,8 @@ void forwardOtherMessage() {
       MIDI.sendSysEx(MIDI.getSysExArrayLength(), MIDI.getSysExArray(), true);
       break;
 
-    // Everything else is dropped, incl. Song Position, Song Select and
-    // timecode.
+    // Everything else is dropped: Song Position, Song Select and MIDI
+    // timecode aren't needed for a keyboard-to-synth setup.
     default:
       break;
   }
@@ -228,8 +232,8 @@ void setup() {
 }
 
 void loop() {
-  // read() calls our note handlers, then returns true if a message arrived.
-  // In bypass, the library's thru has already sent it.
+  // read() calls the handlers above, then returns true if a message
+  // arrived. In bypass, the library's thru has already sent it.
   if (MIDI.read() && !bypass) {
     forwardOtherMessage();
   }

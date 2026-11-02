@@ -2,8 +2,7 @@
 
 #include <Arduino.h>          // analogRead, digitalRead, millis
 
-// Everything below is "static": private to this file. The rest of the
-// code can only reach the controls through the functions in controls.h.
+// All state below is file-private; controls.h is the public interface.
 
 static const int TONIC_KNOB_PIN    = A0;
 static const int MAQAM_KNOB_PIN    = A1;

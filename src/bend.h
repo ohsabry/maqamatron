@@ -5,11 +5,10 @@
 
 #include <stdint.h>
 
-// Fixed-size types mirror the Arduino Uno, so the code means the same on
-// any chip (and in tests on a computer): int16_t is the Uno's int,
-// int32_t is the Uno's long, uint8_t is a byte.
+// Fixed-width types match the Uno (int16_t = int, int32_t = long), so the
+// code behaves the same on any chip and in tests on a computer.
 
-// MIDI facts: a pitch bend is 14 bits, centred on 0 in these units.
+// MIDI pitch bend is 14 bits; the MIDI library centres it on 0.
 const int16_t BEND_MIN = -8192;
 const int16_t BEND_MAX = 8191;
 
