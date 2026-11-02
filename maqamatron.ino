@@ -87,7 +87,7 @@ bool bypass = false;                 // toggled by the bypass button
 // and always send their sum: what you hear = key + maqam offset + wheel.
 int  wheelBend = 0;                  // where the keyboard's pitch wheel is (0 = centred)
 int  noteBend  = 0;                  // maqam offset of the note currently sounding
-byte lastNoteChannel = 1;            // channel of the last note we bent, for the bypass reset
+byte lastNoteChannel = 1;            // channel of the last note played, for bends no MIDI message triggered
 
 // Keys currently held, oldest first. A mono synth remembers held keys
 // and falls back to one when the sounding key is released; we keep the
@@ -231,6 +231,7 @@ void readKnobs() {
     tonic = newTonic;
     maqam = newMaqam;
     displayDirty = true;
+    retuneHeldNote();                       // a held key takes the new tuning now
   }
 }
 
@@ -272,6 +273,7 @@ void toggleBypass() {
     MIDI.turnThruOn();
   } else {
     MIDI.turnThruOff();
+    retuneHeldNote();                       // a held key gets its maqam offset back
   }
 
   displayDirty = true;
@@ -331,6 +333,15 @@ void tuneSoundingNote(byte channel) {
   displayDirty = true;
 }
 
+// A knob or bypass changed, and a key may still be held: retune it now
+// instead of waiting for the next note. No MIDI message came in, so
+// there's no channel to reply on; use the last note's.
+void retuneHeldNote() {
+  if (heldNoteCount > 0 && !bypass) {
+    tuneSoundingNote(lastNoteChannel);
+  }
+}
+
 
 // ============================================================
 // MIDI handlers
@@ -341,13 +352,13 @@ void tuneSoundingNote(byte channel) {
 
 void handleNoteOn(byte channel, byte note, byte velocity) {
   addHeldNote(note);
+  lastNoteChannel = channel;
   if (bypass) {
     return;                                 // thru already forwarded it
   }
 
   tuneSoundingNote(channel);                // bend first (offset + wheel)...
   MIDI.sendNoteOn(note, velocity, channel); // ...then the note
-  lastNoteChannel = channel;
 }
 
 void handleNoteOff(byte channel, byte note, byte velocity) {
