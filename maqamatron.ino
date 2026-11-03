@@ -1,32 +1,22 @@
-// Maqamatron: Arabic maqam quarter tones for a mono synth.
+// Maqamatron: retunes a mono synth to Arabic maqam quarter tones.
 //
-// Sits between a MIDI keyboard and a synth. Each note gets a pitch bend
-// that puts it where the selected maqam wants it (e.g. E half-flat in
-// Bayati), with the keyboard's own pitch wheel added on top. Everything
-// else passes through untouched.
+// Sits between a MIDI keyboard and a synth. Before each note it sends a
+// pitch bend that puts the note where the selected maqam wants it, with the
+// keyboard's pitch wheel added on top. Other MIDI passes through.
 //
-// Hardware: Arduino Uno (or SparkFun RedBoard) with the SparkFun MIDI
-// Shield and a 16x2 LCD. Set the shield's switch to PROG to upload and
-// RUN to play.
-//
-// This file is the wiring: it connects the MIDI port, knobs and button to
-// the Engine (src/engine.h), which does the actual tuning.
+// This file wires the MIDI port, knobs and button to the Engine
+// (src/engine.h), which does the tuning.
 
 #include <MIDI.h>
 
 #include "src/settings.h"
 #include "src/maqams.h"
-#include "src/display.h"
+#include "src/frontPanelDisplay.h"
 #include "src/controls.h"
 #include "src/synth.h"
 #include "src/engine.h"
 
-MIDI_CREATE_DEFAULT_INSTANCE();              // MIDI on hardware serial (D0/D1)
-
-
-// ============================================================
-// The synth, reached over MIDI
-// ============================================================
+MIDI_CREATE_DEFAULT_INSTANCE();
 
 class MidiSynth : public Synth {
 public:
@@ -49,12 +39,8 @@ public:
 };
 
 MidiSynth synth;
-Engine engine(synth, { BEND_RANGE_CENTS, WHEEL_DEAD_ZONE, NOTE_PRIORITY });
-
-
-// ============================================================
-// Controls
-// ============================================================
+FrontPanelDisplay display;
+Engine engine(synth, display, { BEND_RANGE_CENTS, WHEEL_DEAD_ZONE, NOTE_PRIORITY });
 
 void readControls() {
   controlsUpdate();
@@ -67,39 +53,30 @@ void readControls() {
   }
 }
 
-
-// ============================================================
-// MIDI in
-// ============================================================
-
-// The MIDI library calls plain functions, so these hand each message on
-// to the engine.
+// The MIDI library takes plain functions, not member functions.
 void handleNoteOn(byte channel, byte note, byte velocity)  { engine.noteOn(channel, note, velocity); }
 void handleNoteOff(byte channel, byte note, byte velocity) { engine.noteOff(channel, note, velocity); }
 void handlePitchBend(byte channel, int bend)               { engine.wheel(channel, bend); }
 
-// A filtered thru: send the message MIDI.read() just received back out
-// unchanged, unless the engine handles it or it's on the dropped list below.
+// Forwards the message MIDI.read() just received, unless the engine handles
+// it. Song Position, Song Select and MIDI timecode aren't needed between a
+// keyboard and a synth, so they're dropped.
 void forwardOtherMessage() {
   midi::MidiType type = MIDI.getType();
 
   switch (type) {
-    // Handled by the engine: notes get bent, and the wheel is
-    // combined with the maqam offset.
     case midi::NoteOn:
     case midi::NoteOff:
     case midi::PitchBend:
       break;
 
-    // Channel messages: type, up to two data bytes, channel.
-    case midi::ControlChange:               // incl. mod wheel (CC 1)
+    case midi::ControlChange:
     case midi::ProgramChange:
     case midi::AfterTouchChannel:
     case midi::AfterTouchPoly:
       MIDI.send(type, MIDI.getData1(), MIDI.getData2(), MIDI.getChannel());
       break;
 
-    // Real-time and other one-byte messages: just the type.
     case midi::Clock:
     case midi::Start:
     case midi::Continue:
@@ -110,45 +87,35 @@ void forwardOtherMessage() {
       MIDI.sendRealTime(type);
       break;
 
-    // System exclusive: a block of any length. The stored bytes
-    // already include the F0 start and F7 end, hence true.
     case midi::SystemExclusive:
+      // The stored message already includes the F0 and F7 bytes.
       MIDI.sendSysEx(MIDI.getSysExArrayLength(), MIDI.getSysExArray(), true);
       break;
 
-    // Everything else is dropped: Song Position, Song Select and MIDI
-    // timecode aren't needed for a keyboard-to-synth setup.
     default:
       break;
   }
 }
 
-
-// ============================================================
-// setup / loop
-// ============================================================
-
 void setup() {
-  displayBegin();
+  display.begin();
   controlsBegin(maqamCount);
 
   MIDI.setHandleNoteOn(handleNoteOn);
   MIDI.setHandleNoteOff(handleNoteOff);
   MIDI.setHandlePitchBend(handlePitchBend);
-  MIDI.begin(MIDI_CHANNEL_OMNI);            // listen on all channels
-  MIDI.turnThruOff();                       // we forward messages ourselves
+  MIDI.begin(MIDI_CHANNEL_OMNI);
+  MIDI.turnThruOff();                       // forwardOtherMessage() forwards instead
 
-  // Know the tonic and maqam before any note arrives. After MIDI.begin(),
-  // because a button held at power-on toggles bypass, which sends MIDI.
+  // After MIDI.begin(): a button held at power-on toggles bypass, which sends MIDI.
   readControls();
 }
 
 void loop() {
-  // read() calls the handlers above, then returns true if a message
-  // arrived. In bypass, the library's thru has already sent it.
+  // In bypass, the library's thru has already forwarded the message.
   if (MIDI.read() && !engine.bypassed()) {
     forwardOtherMessage();
   }
   readControls();
-  displayUpdate();
+  display.update();
 }

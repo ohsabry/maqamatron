@@ -1,9 +1,9 @@
 #include "heldNotes.h"
 
 void HeldNotes::add(uint8_t note) {
-  remove(note);                             // never list the same key twice
+  remove(note);
   if (count == MAX_HELD_NOTES) {
-    remove(notes[0]);                       // full: drop the oldest
+    remove(notes[0]);
   }
   notes[count] = note;
   count++;
@@ -12,7 +12,6 @@ void HeldNotes::add(uint8_t note) {
 void HeldNotes::remove(uint8_t note) {
   for (int16_t i = 0; i < count; i++) {
     if (notes[i] == note) {
-      // Shift every later key one slot down, over the removed one.
       for (int16_t j = i; j < count - 1; j++) {
         notes[j] = notes[j + 1];
       }
@@ -47,5 +46,5 @@ uint8_t HeldNotes::sounding(NotePriority priority) const {
     return highest;
   }
 
-  return notes[count - 1];                  // Last: the newest key
+  return notes[count - 1];
 }

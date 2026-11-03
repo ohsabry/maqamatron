@@ -1,25 +1,24 @@
-// Engine: decides how each note is tuned.
-//
-// Told about keys, the pitch wheel, the knobs and the bypass button; tells
-// the Synth what to play and the display what to show. Knows nothing about
-// the MIDI library, knobs or pins.
+// Engine: decides how each note is tuned, and tells the Synth and Display.
+// It has no hardware dependencies, so it also runs in the host tests.
 
 #pragma once
 
 #include <stdint.h>
 
 #include "synth.h"
+#include "display.h"
 #include "heldNotes.h"
 
+// See settings.h.
 struct EngineSettings {
-  int16_t bendRangeCents;       // must match the synth's bend range
-  int16_t wheelDeadZone;        // wheel values this close to 0 count as centred
-  NotePriority notePriority;    // must match the synth's note priority
+  int16_t bendRangeCents;
+  int16_t wheelDeadZone;
+  NotePriority notePriority;
 };
 
 class Engine {
 public:
-  Engine(Synth& synth, EngineSettings settings);
+  Engine(Synth& synth, Display& display, EngineSettings settings);
 
   void noteOn(uint8_t channel, uint8_t note, uint8_t velocity);
   void noteOff(uint8_t channel, uint8_t note, uint8_t velocity);
@@ -34,19 +33,22 @@ private:
   void retuneHeldNote();
 
   Synth& synth;
+  Display& display;
   EngineSettings settings;
 
-  // Set by setMaqam(); -1 until then.
-  int16_t tonic = -1;
-  int16_t maqam = -1;
-
+  // Start at 0 rather than a "not set" value, so maqams[maqam] is always valid.
+  int16_t tonic = 0;
+  int16_t maqam = 0;
   bool bypass = false;
 
-  // The synth has one bend setting, fed by two sources. We remember both
-  // and always send their sum: what you hear = key + maqam offset + wheel.
-  int16_t wheelBend = 0;              // where the pitch wheel is (0 = centred)
-  int16_t noteBend  = 0;              // maqam offset of the note currently sounding
-  uint8_t lastNoteChannel = 1;        // channel of the last note, for bends no MIDI message triggered
+  // The synth has one bend per channel, and two things want to set it: the
+  // wheel and the maqam offset. Every bend sent is their sum.
+  int16_t wheelBend = 0;
+  int16_t noteBend  = 0;
 
-  HeldNotes heldNotes;                // keys currently held, in the order pressed
+  // Retuning after a knob turn or bypass isn't triggered by a MIDI message,
+  // so it uses the channel of the last note.
+  uint8_t lastNoteChannel = 1;
+
+  HeldNotes heldNotes;
 };
