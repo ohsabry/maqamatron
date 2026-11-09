@@ -8,13 +8,17 @@
 // (src/engine.h), which does the tuning.
 
 #include <MIDI.h>
+#include <EEPROM.h>
 
 #include "src/settings.h"
+#include "src/version.h"
 #include "src/maqams.h"
 #include "src/frontPanelDisplay.h"
 #include "src/controls.h"
 #include "src/synth.h"
 #include "src/engine.h"
+#include "src/settingsStore.h"
+#include "src/settingsMenu.h"
 
 MIDI_CREATE_DEFAULT_INSTANCE();
 
@@ -40,7 +44,23 @@ public:
 
 MidiSynth synth;
 FrontPanelDisplay display;
-Engine engine(synth, display, { BEND_RANGE_CENTS, WHEEL_DEAD_ZONE, NOTE_PRIORITY });
+const EngineSettings DEFAULT_SETTINGS = { BEND_RANGE_CENTS, WHEEL_DEAD_ZONE, NOTE_PRIORITY };
+const int SETTINGS_EEPROM_ADDRESS = 0;
+
+Engine engine(synth, display, DEFAULT_SETTINGS);
+
+EngineSettings loadSettings() {
+  uint8_t bytes[SETTINGS_BYTES];
+  EEPROM.get(SETTINGS_EEPROM_ADDRESS, bytes);
+  return decodeSettings(bytes, DEFAULT_SETTINGS);
+}
+
+// EEPROM.put() skips bytes that haven't changed, which saves wear.
+void saveSettings(const EngineSettings& settings) {
+  uint8_t bytes[SETTINGS_BYTES];
+  encodeSettings(settings, bytes);
+  EEPROM.put(SETTINGS_EEPROM_ADDRESS, bytes);
+}
 
 void readControls() {
   controlsUpdate();
@@ -99,7 +119,15 @@ void forwardOtherMessage() {
 
 void setup() {
   display.begin();
+  display.showVersion(FIRMWARE_VERSION);
   controlsBegin(maqamCount);
+
+  EngineSettings settings = loadSettings();
+  if (controlsBypassHeld()) {
+    runSettingsMenu(display, settings);
+    saveSettings(settings);
+  }
+  engine.setSettings(settings);
 
   MIDI.setHandleNoteOn(handleNoteOn);
   MIDI.setHandleNoteOff(handleNoteOff);
@@ -107,8 +135,10 @@ void setup() {
   MIDI.begin(MIDI_CHANNEL_OMNI);
   MIDI.turnThruOff();                       // forwardOtherMessage() forwards instead
 
-  // After MIDI.begin(): a button held at power-on toggles bypass, which sends MIDI.
-  readControls();
+  // Not readControls(): the menu may have read the knobs already, so they
+  // wouldn't count as changed.
+  controlsUpdate();
+  engine.setMaqam(controlsTonic(), controlsMaqam());
 }
 
 void loop() {

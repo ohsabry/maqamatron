@@ -2,7 +2,8 @@
 //
 // They cover the logic that's easy to get subtly wrong: bend math at the
 // edges of its range, the maqam lookup across octaves, the held-notes
-// fallback, and what the engine sends, in what order.
+// fallback, what the engine sends, in what order, and that bad saved
+// settings fall back to the defaults.
 //
 // The modules use fixed-width types (int16_t etc.), so values are stored
 // at the same sizes as on the Uno. Arithmetic isn't: the computer's int is
@@ -17,6 +18,7 @@
 #include "maqams.h"
 #include "heldNotes.h"
 #include "engine.h"
+#include "settingsStore.h"
 
 static int failures = 0;
 
@@ -223,6 +225,34 @@ static void testEngineBypass() {
 }
 
 
+// Saved settings
+
+static const EngineSettings DEFAULTS = { 200, 64, NotePriority::Last };
+
+static void testSettingsRoundTrip() {
+  uint8_t bytes[SETTINGS_BYTES];
+  encodeSettings({ 1200, 0, NotePriority::High }, bytes);
+  EngineSettings loaded = decodeSettings(bytes, DEFAULTS);
+  CHECK(loaded.bendRangeCents == 1200);
+  CHECK(loaded.notePriority == NotePriority::High);
+  CHECK(loaded.wheelDeadZone == 64);   // not stored
+}
+
+static void testSettingsBadBytesGiveDefaults() {
+  uint8_t fresh[SETTINGS_BYTES] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };   // new chip
+  CHECK(decodeSettings(fresh, DEFAULTS).bendRangeCents == 200);
+
+  uint8_t bytes[SETTINGS_BYTES];
+  encodeSettings({ 1200, 0, NotePriority::High }, bytes);
+  bytes[2] = 3;                       // corrupted, checksum no longer matches
+  CHECK(decodeSettings(bytes, DEFAULTS).bendRangeCents == 200);
+
+  encodeSettings({ 0, 0, NotePriority::High }, bytes);   // valid checksum, range 0
+  EngineSettings loaded = decodeSettings(bytes, DEFAULTS);
+  CHECK(loaded.bendRangeCents == 200);
+  CHECK(loaded.notePriority == NotePriority::Last);
+}
+
 int main() {
   testBendMath();
   testMaqamLookup();
@@ -235,6 +265,8 @@ int main() {
   testEngineFallbackRetunes();
   testEngineKnobRetunesHeldNote();
   testEngineBypass();
+  testSettingsRoundTrip();
+  testSettingsBadBytesGiveDefaults();
 
   if (failures > 0) {
     std::printf("%d check(s) failed\n", failures);

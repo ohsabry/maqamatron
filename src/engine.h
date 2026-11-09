@@ -25,6 +25,7 @@ public:
   void wheel(uint8_t channel, int16_t bend);
   void setMaqam(int16_t tonic, int16_t maqam);
   void toggleBypass();
+  void setSettings(EngineSettings settings);   // used from the next note
   bool bypassed() const;
 
 private:

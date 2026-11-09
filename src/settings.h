@@ -1,5 +1,6 @@
-// Settings to match the synth and the player. maqamatron.ino passes them
-// to the engine.
+// Defaults for the settings that match the synth and the player.
+// Bend range and note priority can also be changed on the box (hold the
+// button at power-on); saved values replace these defaults.
 
 #pragma once
 

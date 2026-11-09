@@ -71,6 +71,10 @@ void Engine::toggleBypass() {
   display.showMaqam(maqams[maqam].name, tonic, bypass);
 }
 
+void Engine::setSettings(EngineSettings newSettings) {
+  settings = newSettings;
+}
+
 int16_t Engine::sendCombinedBend(uint8_t channel) {
   int16_t total = combineBend(wheelBend, noteBend);
   synth.bend(channel, total);

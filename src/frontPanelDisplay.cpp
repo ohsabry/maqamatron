@@ -26,6 +26,22 @@ void FrontPanelDisplay::begin() {
   pinMode(UNUSED_LED_PIN, OUTPUT);
 }
 
+void FrontPanelDisplay::showVersion(const char* version) {
+  lcd.print("Maqamatron");
+  lcd.setCursor(0, 1);
+  lcd.print(version);
+  delay(1000);
+  // Line 2 isn't redrawn until a note is played, so don't leave this behind.
+  lcd.clear();
+}
+
+void FrontPanelDisplay::showSetting(const char* name, const char* value) {
+  lcd.setCursor(0, 0);
+  printSpaces(16 - lcd.print(name));
+  lcd.setCursor(0, 1);
+  printSpaces(16 - lcd.print(value));
+}
+
 void FrontPanelDisplay::showMaqam(const char* maqamName, int16_t tonic, bool bypass) {
   shownMaqamName = maqamName;
   shownTonic     = tonic;

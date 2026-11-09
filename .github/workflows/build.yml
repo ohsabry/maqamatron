@@ -1,0 +1,43 @@
+# On every push and pull request: run the tests and compile the firmware.
+# On a version tag (v0.1.0): also publish a GitHub release with the .hex.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to create releases
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # all history and tags, for git describe
+
+      - name: Test
+        run: make test
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      # Pinned, so a release builds the same way every time.
+      - name: Install core and libraries
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr@1.8.8
+          arduino-cli lib install "MIDI Library@5.0.2" "LiquidCrystal@1.0.7"
+
+      - name: Compile
+        run: make
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build/maqamatron.ino.hex maqamatron-sparkfun-${{ github.ref_name }}.hex
+          gh release create ${{ github.ref_name }} --generate-notes maqamatron-sparkfun-${{ github.ref_name }}.hex

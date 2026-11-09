@@ -14,6 +14,14 @@ void controlsUpdate();
 int16_t controlsTonic();
 int16_t controlsMaqam();
 
+// Which of `slices` equal parts each knob is in, read now. For the
+// settings menu, which divides the knobs its own way.
+int16_t controlsTonicKnob(int16_t slices);
+int16_t controlsMaqamKnob(int16_t slices);
+
+// Whether the button is down right now. For checking at power-on.
+bool controlsBypassHeld();
+
 // True only for the update in which it happened.
 bool controlsKnobsChanged();
 bool controlsBypassPressed();

@@ -20,10 +20,22 @@ static unsigned long lastBypassButtonChangeTime = 0;
 static bool knobsChanged  = false;
 static bool bypassPressed = false;
 
+// 1024, not 1023, so the top slice is as wide as the others.
+int16_t controlsTonicKnob(int16_t slices) {
+  return map(analogRead(TONIC_KNOB_PIN), 0, 1024, 0, slices);
+}
+
+int16_t controlsMaqamKnob(int16_t slices) {
+  return map(analogRead(MAQAM_KNOB_PIN), 0, 1024, 0, slices);
+}
+
+bool controlsBypassHeld() {
+  return digitalRead(BYPASS_BUTTON_PIN) == LOW;
+}
+
 static void readKnobs() {
-  // 1024, not 1023, so the top slice is as wide as the others.
-  int16_t newTonic = map(analogRead(TONIC_KNOB_PIN), 0, 1024, 0, 12);
-  int16_t newMaqam = map(analogRead(MAQAM_KNOB_PIN), 0, 1024, 0, maqamSlices);
+  int16_t newTonic = controlsTonicKnob(12);
+  int16_t newMaqam = controlsMaqamKnob(maqamSlices);
 
   if (newTonic != tonicSlice || newMaqam != maqamSlice) {
     tonicSlice = newTonic;

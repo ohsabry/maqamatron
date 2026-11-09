@@ -18,6 +18,12 @@ public:
   void begin();     // call once in setup()
   void update();    // call every loop()
 
+  // Blocks for a second, so call it in setup() before MIDI starts.
+  void showVersion(const char* version);
+
+  // For the settings menu. Draws straight away; update() isn't running yet.
+  void showSetting(const char* name, const char* value);
+
   void showMaqam(const char* maqamName, int16_t tonic, bool bypass) override;
   void showNote(uint8_t note, int16_t cents, int16_t bend) override;
 
