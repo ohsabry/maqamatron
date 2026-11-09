@@ -23,13 +23,16 @@ It's the same idea as the sikah buttons on the "oriental" keyboards you find all
 - The A0 knob picks the tonic, the A1 knob the maqam.
 - The button toggles bypass. The LED is lit while the maqam is active.
 - The LCD shows the maqam and tonic, and the last note with its bend.
+- At power-on it shows the firmware version for a second.
 
 ## Synth setup
 
-Pitch bend moves every note on a MIDI channel at once, so this only works with a mono synth. Its settings must match `src/settings.h`:
+Pitch bend moves every note on a MIDI channel at once, so this only works with a mono synth. Two settings must match the synth:
 
-- Pitch bend range: ±2 semitones (`BEND_RANGE_CENTS`)
-- Note priority: last note (`NOTE_PRIORITY`)
+- Pitch bend range: 1–12 semitones, default ±2
+- Note priority: last, low or high, default last
+
+To change them, hold the button while powering on until the settings screen appears. The A0 knob picks the setting, the A1 knob changes it, and the button saves. The defaults are in [`src/settings.h`](src/settings.h).
 
 ## Maqamat
 
